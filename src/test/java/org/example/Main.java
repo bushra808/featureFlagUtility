@@ -84,6 +84,7 @@ public class Main {
                 .when()
                 .post(LOGIN_ENDPOINT)
                 .then()
+                .log().all()
                 .extract().response();
 
         logResponseDetails("Login response", response);
