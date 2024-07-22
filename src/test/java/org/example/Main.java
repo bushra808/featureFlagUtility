@@ -42,6 +42,9 @@ public class Main {
         String email = args[2]; // Update as needed
         String password = args[3]; // Update as needed
 
+        System.out.println("Email: " + email);
+        System.out.println("Password: " + password);
+
         Main main = new Main();
         Response response = main.loginAndGetResponse(email, password);
         if (response.getStatusCode() != 200) {
