@@ -77,6 +77,7 @@ public class Main {
 
     private Response loginAndGetResponse(String email, String password) {
         String requestBody = String.format("{\"email\":\"%s\",\"password\":\"%s\"}", email, password);
+        System.out.println("Req:"+requestBody);
         Response response = given()
                 .baseUri(BASE_URL)
                 .contentType(ContentType.JSON)
