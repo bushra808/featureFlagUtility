@@ -6,7 +6,7 @@ pipeline {
             steps {
                 sh '''
                 mvn clean install > /dev/null
-                mvn exec:java -Dexec.mainClass="org.example.Main" -Dexec.args="$TENANT $OPERATION $EMAIL $PASSWORD"
+                mvn exec:java -Dexec.mainClass="org.example.org.example.Main" -Dexec.args="$TENANT $OPERATION $EMAIL $PASSWORD"
                 '''
             }
         }

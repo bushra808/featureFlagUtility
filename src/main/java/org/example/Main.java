@@ -22,34 +22,31 @@ public class Main {
     private static final String SESSION_COOKIE_NAME = "SESSION";
     private static final String CSRF_TOKEN_HEADER = "X-CSRF-Token";
     private static final String FLAG_NAME = "FREEMIUM_FEATURES";
+    private static final String LOGOUT_ENDPOINT = "/logout";
 
     private static final Gson gson = new GsonBuilder().serializeNulls().create();
 
     public static void main(String[] args) {
-        if (args.length < 2) {
-            System.err.println("Usage: java org.example.Main <tenantId> <function>");
+        if (args.length < 4) {
+            System.err.println("Usage: java org.example.Main <tenantId> <function> <email> <password>");
             System.exit(1);
         }
 
         int tenantId = Integer.parseInt(args[0]);
         String function = args[1];
+        String email = args[2];
+        String password = args[3];
 
-        // Print or use these arguments as needed
         System.out.println("Tenant ID: " + tenantId);
         System.out.println("Function: " + function);
-
-        // Update email and password as needed
-        String email = args[2]; // Update as needed
-        String password = args[3]; // Update as needed
-
         System.out.println("Email: " + email);
         System.out.println("Password: " + password);
 
         Main main = new Main();
         Response response = main.loginAndGetResponse(email, password);
-        if (response.getStatusCode() != 200) {
+        if (response == null || response.getStatusCode() != 200) {
             logError("Login failed", response);
-            return;
+            System.exit(1); // Exit with failure status
         }
 
         Map<String, String> cookies = response.getCookies();
@@ -60,7 +57,6 @@ public class Main {
 
         String jsonInput = fetchFeatureFlags(csrfToken, sessionId);
         if (!"N/A".equals(jsonInput)) {
-            // Add or remove tenant based on function argument
             String updatedJson = jsonInput;
             if ("add".equalsIgnoreCase(function)) {
                 updatedJson = addTenant(updatedJson, tenantId);
@@ -72,39 +68,52 @@ public class Main {
             }
 
             sendFeatureFlagPayload(updatedJson, csrfToken, sessionId);
+            logout(sessionId);
         }
     }
 
     private Response loginAndGetResponse(String email, String password) {
         String requestBody = String.format("{\"email\":\"%s\",\"password\":\"%s\"}", email, password);
-        System.out.println("Req:"+requestBody);
-        Response response = given()
-                .baseUri(BASE_URL)
-                .contentType(ContentType.JSON)
-                .body(requestBody)
-                .when()
-                .post(LOGIN_ENDPOINT)
-                .then()
-                .log().all()
-                .extract().response();
+        Response response = null;
+        try {
+            response = given()
+                    .baseUri(BASE_URL)
+                    .contentType(ContentType.JSON)
+                    .body(requestBody)
+                    .when()
+                    .post(LOGIN_ENDPOINT)
+                    .then()
+                    .log().all()
+                    .extract().response();
 
-        logResponseDetails("Login response", response);
+            logResponseDetails("Login response", response);
+        } catch (Exception e) {
+            handleException("Exception during login", e);
+        }
         return response;
     }
 
     private static String fetchFeatureFlags(String csrfToken, String sessionId) {
-        Response getResponse = given()
-                .baseUri(BASE_URL_GET)
-                .cookie(SESSION_COOKIE_NAME, sessionId)
-                .header(CSRF_TOKEN_HEADER, csrfToken)
-                .when()
-                .get(FEATURE_FLAG_ENDPOINT)
-                .then()
-                .extract().response();
+        Response getResponse = null;
+        try {
+            getResponse = given()
+                    .baseUri(BASE_URL_GET)
+                    .cookie(SESSION_COOKIE_NAME, sessionId)
+                    .header(CSRF_TOKEN_HEADER, csrfToken)
+                    .when()
+                    .get(FEATURE_FLAG_ENDPOINT)
+                    .then()
+                    .extract().response();
 
-        if (getResponse.getStatusCode() != 200) {
-            logError("Failed to fetch the feature flag details", getResponse);
-            return "N/A";
+            if (getResponse.getStatusCode() != 200) {
+                logError("Failed to fetch the feature flag details", getResponse);
+                System.exit(1); // Exit with failure status
+                return "N/A"; // This line is unreachable, but added for completeness
+            }
+        } catch (Exception e) {
+            handleException("Exception during fetching feature flags", e);
+            System.exit(1); // Exit with failure status
+            return "N/A"; // This line is unreachable, but added for completeness
         }
 
         return extractFeatureFlagDetails(getResponse);
@@ -146,22 +155,27 @@ public class Main {
     }
 
     public static void sendFeatureFlagPayload(String jsonPayload, String csrfToken, String sessionId) {
-        Response response = given()
-                .baseUri(BASE_URL_GET)
-                .contentType(ContentType.JSON)
-                .cookie(SESSION_COOKIE_NAME, sessionId)
-                .header(CSRF_TOKEN_HEADER, csrfToken)
-                .body(jsonPayload)
-                .when()
-                .put(FEATURE_FLAG_ENDPOINT)
-                .then()
-                .extract().response();
+        try {
+            Response response = given()
+                    .baseUri(BASE_URL_GET)
+                    .contentType(ContentType.JSON)
+                    .cookie(SESSION_COOKIE_NAME, sessionId)
+                    .header(CSRF_TOKEN_HEADER, csrfToken)
+                    .body(jsonPayload)
+                    .when()
+                    .put(FEATURE_FLAG_ENDPOINT)
+                    .then()
+                    .extract().response();
 
-        if (response.getStatusCode() != 200) {
-            logError("Failed to send the feature flag payload", response);
-        } else {
-            System.out.println("Successfully sent the feature flag payload");
-            System.out.println(jsonPayload);
+            if (response.getStatusCode() != 200) {
+                logError("Failed to send the feature flag payload", response);
+                System.exit(1); // Exit with failure status
+            } else {
+                System.out.println("Successfully sent the feature flag payload");
+                System.out.println(jsonPayload);
+            }
+        } catch (Exception e) {
+            handleException("Exception during sending feature flag payload", e);
         }
     }
 
@@ -171,7 +185,7 @@ public class Main {
             try {
                 token = response.jsonPath().getString("csrfToken");
             } catch (Exception e) {
-                System.err.println("Failed to parse response body as JSON: " + e.getMessage());
+                handleException("Failed to parse response body as JSON", e);
             }
         }
         return token;
@@ -212,15 +226,46 @@ public class Main {
         return gson.toJson(featureFlagDetails);
     }
 
-    private void logResponseDetails(String message, Response response) {
+    private static void logResponseDetails(String message, Response response) {
         System.out.println(message);
         System.out.println("Status code: " + response.getStatusCode());
         System.out.println("Response body: " + response.getBody().asString());
     }
 
     private static void logError(String message, Response response) {
+        if (response != null) {
+            System.err.println(message);
+            System.err.println("Status code: " + response.getStatusCode());
+            System.err.println("Response body: " + response.getBody().asString());
+        } else {
+            System.err.println(message + ": Response is null");
+        }
+    }
+
+    private static void logout(String sessionId) {
+        try {
+            given()
+                    .baseUri(BASE_URL_GET)
+                    .cookie(SESSION_COOKIE_NAME, sessionId)
+                    .when()
+                    .get(LOGOUT_ENDPOINT)
+                    .then()
+                    .statusCode(200)
+                    .log().all();
+
+            System.out.println("Logout successful");
+        } catch (Exception e) {
+            handleException("Exception during logout", e);
+        }
+    }
+
+    private static void handleException(String message, Exception e) {
         System.err.println(message);
-        System.err.println("Status code: " + response.getStatusCode());
-        System.err.println("Response body: " + response.getBody().asString());
+        if (e != null) {
+            e.printStackTrace();
+        } else {
+            System.err.println("Unknown exception occurred");
+        }
+        System.exit(1); // Exit with failure status
     }
 }
