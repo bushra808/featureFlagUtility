@@ -5,9 +5,7 @@ import io.restassured.http.ContentType;
 import io.restassured.path.json.JsonPath;
 import io.restassured.response.Response;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -21,26 +19,33 @@ public class Main {
     private static final String FEATURE_FLAG_ENDPOINT = "/api/super-admin/feature-flag";
     private static final String SESSION_COOKIE_NAME = "SESSION";
     private static final String CSRF_TOKEN_HEADER = "X-CSRF-Token";
-    private static final String FLAG_NAME = "FREEMIUM_FEATURES";
     private static final String LOGOUT_ENDPOINT = "/logout";
 
     private static final Gson gson = new GsonBuilder().serializeNulls().create();
 
     public static void main(String[] args) {
-        if (args.length < 4) {
-            System.err.println("Usage: java org.example.Main <tenantId> <function> <email> <password>");
+        if (args.length < 5) {
+            System.err.println("Usage: java org.example.Main <tenantIds> <function> <email> <password> <flagName>");
             System.exit(1);
         }
 
-        int tenantId = Integer.parseInt(args[0]);
+        String tenantIdsInput = args[0];
         String function = args[1];
         String email = args[2];
         String password = args[3];
+        String flagName = args[4];
 
-        System.out.println("Tenant ID: " + tenantId);
+        List<Integer> tenantIds = parseTenantIds(tenantIdsInput);
+        if (tenantIds.isEmpty()) {
+            System.err.println("Tenant IDs list is empty or invalid");
+            System.exit(1);
+        }
+
+        System.out.println("Tenant IDs: " + tenantIds);
         System.out.println("Function: " + function);
         System.out.println("Email: " + email);
         System.out.println("Password: " + password);
+        System.out.println("Flag Name: " + flagName);
 
         Main main = new Main();
         Response response = main.loginAndGetResponse(email, password);
@@ -55,21 +60,41 @@ public class Main {
 
         validateSessionData(cookies, csrfToken, sessionId);
 
-        String jsonInput = fetchFeatureFlags(csrfToken, sessionId);
+        String jsonInput = fetchFeatureFlags(csrfToken, sessionId, flagName);
         if (!"N/A".equals(jsonInput)) {
             String updatedJson = jsonInput;
             if ("add".equalsIgnoreCase(function)) {
-                updatedJson = addTenant(updatedJson, tenantId);
+                updatedJson = addTenants(updatedJson, tenantIds);
             } else if ("remove".equalsIgnoreCase(function)) {
-                updatedJson = removeTenant(updatedJson, tenantId);
+                updatedJson = removeTenants(updatedJson, tenantIds);
             } else {
                 System.err.println("Unknown function: " + function);
                 System.exit(1);
             }
 
-            sendFeatureFlagPayload(updatedJson, csrfToken, sessionId);
+            // Check if there are changes in the payload
+            if (!jsonInput.equals(updatedJson)) {
+                sendFeatureFlagPayload(updatedJson, csrfToken, sessionId, flagName);
+            } else {
+                System.out.println("No changes in the feature flag payload. Skipping API call.");
+            }
+
             logout(sessionId);
         }
+    }
+
+    private static List<Integer> parseTenantIds(String tenantIdsInput) {
+        List<Integer> tenantIds = new ArrayList<>();
+        try {
+            String[] ids = tenantIdsInput.split(",");
+            for (String id : ids) {
+                tenantIds.add(Integer.parseInt(id.trim()));
+            }
+        } catch (NumberFormatException e) {
+            System.err.println("Error parsing tenant IDs");
+            e.printStackTrace();
+        }
+        return tenantIds;
     }
 
     private Response loginAndGetResponse(String email, String password) {
@@ -93,7 +118,7 @@ public class Main {
         return response;
     }
 
-    private static String fetchFeatureFlags(String csrfToken, String sessionId) {
+    private static String fetchFeatureFlags(String csrfToken, String sessionId, String flagName) {
         Response getResponse = null;
         try {
             getResponse = given()
@@ -108,39 +133,36 @@ public class Main {
             if (getResponse.getStatusCode() != 200) {
                 logError("Failed to fetch the feature flag details", getResponse);
                 System.exit(1); // Exit with failure status
-                return "N/A"; // This line is unreachable, but added for completeness
             }
         } catch (Exception e) {
             handleException("Exception during fetching feature flags", e);
-            System.exit(1); // Exit with failure status
-            return "N/A"; // This line is unreachable, but added for completeness
         }
 
-        return extractFeatureFlagDetails(getResponse);
+        return extractFeatureFlagDetails(getResponse, flagName);
     }
 
-    public static String addTenant(String jsonInput, int tenantId) {
+    public static String addTenants(String jsonInput, List<Integer> tenantIds) {
         JsonObject jsonObject = JsonParser.parseString(jsonInput).getAsJsonObject();
         JsonArray tenants = extractTenants(jsonObject);
 
-        JsonElement tenantIdElement = gson.toJsonTree(tenantId);
-        if (!tenants.contains(tenantIdElement)) {
-            tenants.add(tenantIdElement);
+        for (Integer tenantId : tenantIds) {
+            JsonElement tenantIdElement = gson.toJsonTree(tenantId);
+            if (!tenants.contains(tenantIdElement)) {
+                tenants.add(tenantIdElement);
+            }
         }
 
         jsonObject.add("tenants", tenants);
         return gson.toJson(jsonObject);
     }
 
-    public static String removeTenant(String jsonInput, int tenantId) {
+    public static String removeTenants(String jsonInput, List<Integer> tenantIds) {
         JsonObject jsonObject = JsonParser.parseString(jsonInput).getAsJsonObject();
         JsonArray tenants = extractTenants(jsonObject);
 
         JsonArray updatedTenants = new JsonArray();
-        JsonElement tenantIdElement = gson.toJsonTree(tenantId);
-
         for (JsonElement element : tenants) {
-            if (!element.equals(tenantIdElement)) {
+            if (!tenantIds.contains(element.getAsInt())) {
                 updatedTenants.add(element);
             }
         }
@@ -154,7 +176,7 @@ public class Main {
         return tenantsElement != null && tenantsElement.isJsonArray() ? tenantsElement.getAsJsonArray() : new JsonArray();
     }
 
-    public static void sendFeatureFlagPayload(String jsonPayload, String csrfToken, String sessionId) {
+    public static void sendFeatureFlagPayload(String jsonPayload, String csrfToken, String sessionId, String flagName) {
         try {
             Response response = given()
                     .baseUri(BASE_URL_GET)
@@ -171,7 +193,7 @@ public class Main {
                 logError("Failed to send the feature flag payload", response);
                 System.exit(1); // Exit with failure status
             } else {
-                System.out.println("Successfully sent the feature flag payload");
+                System.out.println("Successfully sent the feature flag payload for flag: " + flagName);
                 System.out.println(jsonPayload);
             }
         } catch (Exception e) {
@@ -204,15 +226,15 @@ public class Main {
         assertThat("Session ID should not be empty", sessionId, not(isEmptyString()));
     }
 
-    private static String extractFeatureFlagDetails(Response response) {
+    private static String extractFeatureFlagDetails(Response response, String flagName) {
         JsonPath jsonPath = response.jsonPath();
-        String name = jsonPath.getString("find { it.name == '" + FLAG_NAME + "' }.name");
-        String comments = jsonPath.getString("find { it.name == '" + FLAG_NAME + "' }.comments");
-        List<Object> tenants = jsonPath.getList("find { it.name == '" + FLAG_NAME + "' }.tenants");
-        String gaStatus = jsonPath.getString("find { it.name == '" + FLAG_NAME + "' }.gaStatus");
-        String section = jsonPath.getString("find { it.name == '" + FLAG_NAME + "' }.section");
-        String status = jsonPath.getString("find { it.name == '" + FLAG_NAME + "' }.status");
-        String ticketLink = jsonPath.getString("find { it.name == '" + FLAG_NAME + "' }.ticketLink");
+        String name = jsonPath.getString("find { it.name == '" + flagName + "' }.name");
+        String comments = jsonPath.getString("find { it.name == '" + flagName + "' }.comments");
+        List<Object> tenants = jsonPath.getList("find { it.name == '" + flagName + "' }.tenants");
+        String gaStatus = jsonPath.getString("find { it.name == '" + flagName + "' }.gaStatus");
+        String section = jsonPath.getString("find { it.name == '" + flagName + "' }.section");
+        String status = jsonPath.getString("find { it.name == '" + flagName + "' }.status");
+        String ticketLink = jsonPath.getString("find { it.name == '" + flagName + "' }.ticketLink");
 
         Map<String, Object> featureFlagDetails = new HashMap<>();
         featureFlagDetails.put("name", name);
